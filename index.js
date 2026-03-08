@@ -1,44 +1,32 @@
 const { 
-    Client, 
-    GatewayIntentBits, 
-    ActionRowBuilder, 
-    StringSelectMenuBuilder, 
-    ButtonBuilder, 
-    ButtonStyle, 
-    EmbedBuilder, 
-    PermissionsBitField, 
-    ChannelType 
+    Client, GatewayIntentBits, ActionRowBuilder, StringSelectMenuBuilder, 
+    ButtonBuilder, ButtonStyle, EmbedBuilder, PermissionsBitField, 
+    ChannelType, ModalBuilder, TextInputBuilder, TextInputStyle 
 } = require('discord.js');
 const transcript = require('discord-html-transcripts');
 require('dotenv').config();
 
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-    ],
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
 });
 
 const CATEGORY_ID = process.env.CATEGORY_ID;
 const LOGS_CHANNEL_ID = process.env.LOGS_CHANNEL_ID;
-const OWNER_ID = process.env.OWNER_ID; // Tu ID para el mensaje de ausencia
+const OWNER_ID = process.env.OWNER_ID; 
 
-// Mapa para rastrear tickets y timers de inactividad
 const activeTickets = new Map();
 
 client.once('ready', () => {
-    console.log(`FPSWare Bot online! Monitoring tickets for Owner ID: ${OWNER_ID}`);
+    console.log(`FPSWare Support Bot is Online!`);
 });
 
-// Setup con Menú Desplegable
+// Setup Inicial
 client.on('messageCreate', async (message) => {
     if (message.content === '!setup' && message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
         const embed = new EmbedBuilder()
             .setTitle('FPSWare Support Center')
-            .setDescription('Welcome to **FPSWare**. Please select the category that best fits your request from the menu below.')
-            .setColor('#2b2d31')
-            .setThumbnail(client.user.displayAvatarURL());
+            .setDescription('Please select a category to open a ticket.')
+            .setColor('#2b2d31');
 
         const menu = new ActionRowBuilder().addComponents(
             new StringSelectMenuBuilder()
@@ -56,7 +44,7 @@ client.on('messageCreate', async (message) => {
         await message.channel.send({ embeds: [embed], components: [menu] });
     }
 
-    // Lógica para detectar si el dueño respondió
+    // Detector de respuesta del dueño para cancelar el timer de 1 hora
     if (activeTickets.has(message.channel.id) && message.author.id === OWNER_ID) {
         const ticketData = activeTickets.get(message.channel.id);
         if (ticketData.timeout) {
@@ -67,10 +55,41 @@ client.on('messageCreate', async (message) => {
 });
 
 client.on('interactionCreate', async (interaction) => {
+    
+    // 1. MANEJO DEL MENU (ABRIR FORMULARIOS)
     if (interaction.isStringSelectMenu() && interaction.customId === 'select_category') {
-        await interaction.deferReply({ ephemeral: true });
-
         const category = interaction.values[0];
+        const modal = new ModalBuilder().setCustomId(`modal_${category}`).setTitle('Support Information');
+
+        if (category === 'hwid_reset') {
+            const keyInput = new TextInputBuilder().setCustomId('hwid_key').setLabel("License Key").setPlaceholder("Enter your key here").setStyle(TextInputStyle.Short).setRequired(true);
+            const orderInput = new TextInputBuilder().setCustomId('hwid_order').setLabel("Order ID").setPlaceholder("Order ID (e.g. #1234)").setStyle(TextInputStyle.Short).setRequired(true);
+            modal.addComponents(new ActionRowBuilder().addComponents(keyInput), new ActionRowBuilder().addComponents(orderInput));
+        } 
+        else if (category === 'purchase') {
+            const prodInput = new TextInputBuilder().setCustomId('buy_product').setLabel("What product do you want?").setStyle(TextInputStyle.Short).setRequired(true);
+            const payInput = new TextInputBuilder().setCustomId('buy_method').setLabel("Payment Method").setPlaceholder("Stripe, Whop, Crypto...").setStyle(TextInputStyle.Short).setRequired(true);
+            modal.addComponents(new ActionRowBuilder().addComponents(prodInput), new ActionRowBuilder().addComponents(payInput));
+        }
+        else if (category === 'product_issue') {
+            const orderInput = new TextInputBuilder().setCustomId('issue_order').setLabel("Order ID").setStyle(TextInputStyle.Short).setRequired(true);
+            const nameInput = new TextInputBuilder().setCustomId('issue_name').setLabel("Product Name").setStyle(TextInputStyle.Short).setRequired(true);
+            const descInput = new TextInputBuilder().setCustomId('issue_desc').setLabel("Describe the issue").setStyle(TextInputStyle.Paragraph).setRequired(true);
+            modal.addComponents(new ActionRowBuilder().addComponents(orderInput), new ActionRowBuilder().addComponents(nameInput), new ActionRowBuilder().addComponents(descInput));
+        }
+        else {
+            const generalInput = new TextInputBuilder().setCustomId('general_msg').setLabel("How can we help you?").setStyle(TextInputStyle.Paragraph).setRequired(true);
+            modal.addComponents(new ActionRowBuilder().addComponents(generalInput));
+        }
+
+        return await interaction.showModal(modal);
+    }
+
+    // 2. MANEJO DEL FORMULARIO ENVIADO (CREAR CANAL)
+    if (interaction.isModalSubmit()) {
+        await interaction.deferReply({ ephemeral: true });
+        const category = interaction.customId.replace('modal_', '');
+        
         const channel = await interaction.guild.channels.create({
             name: `${category}-${interaction.user.username}`,
             type: ChannelType.GuildText,
@@ -81,68 +100,59 @@ client.on('interactionCreate', async (interaction) => {
             ],
         });
 
-        let description = "Please wait for a staff member.";
-        let color = '#5865F2';
+        const infoEmbed = new EmbedBuilder().setTitle(`New Ticket: ${category.toUpperCase()}`).setColor('#2b2d31').setTimestamp();
 
-        // Configuración por categoría
+        // Extraer datos según la categoría
         if (category === 'hwid_reset') {
-            description = "**HWID RESET REQUEST**\n\nPlease provide:\n1. Your License Key\n2. Your Order ID\n\n⚠️ **WARNING:** If you do not follow this format, your ticket will be ignored.";
-            color = '#ffaa00';
+            const key = interaction.fields.getTextInputValue('hwid_key');
+            const order = interaction.fields.getTextInputValue('hwid_order');
+            infoEmbed.addFields({ name: 'License Key', value: key }, { name: 'Order ID', value: order })
+                     .setFooter({ text: '⚠️ If format is incorrect, this ticket will be ignored.' });
         } else if (category === 'purchase') {
-            description = "**NEW PURCHASE**\n\nPlease specify:\n1. Which product you want to buy?\n2. Preferred payment method (Stripe, Whop, etc.)?";
-            color = '#2ecc71';
+            infoEmbed.addFields(
+                { name: 'Product', value: interaction.fields.getTextInputValue('buy_product') },
+                { name: 'Payment Method', value: interaction.fields.getTextInputValue('buy_method') }
+            );
         } else if (category === 'product_issue') {
-            description = "**PRODUCT ISSUE**\n\nPlease provide:\n1. Order ID\n2. Product Name\n3. Detailed description of the issue.";
-            color = '#e74c3c';
+            infoEmbed.addFields(
+                { name: 'Order ID', value: interaction.fields.getTextInputValue('issue_order') },
+                { name: 'Product', value: interaction.fields.getTextInputValue('issue_name') },
+                { name: 'Issue', value: interaction.fields.getTextInputValue('issue_desc') }
+            );
+        } else {
+            infoEmbed.addFields({ name: 'Details', value: interaction.fields.getTextInputValue('general_msg') });
         }
 
-        const ticketEmbed = new EmbedBuilder()
-            .setTitle(`FPSWare Support: ${category.replace('_', ' ').toUpperCase()}`)
-            .setDescription(description)
-            .setColor(color)
-            .setFooter({ text: 'FPSWare Automatic Support System' });
-
         const closeRow = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket').setStyle(ButtonStyle.Danger).setEmoji('🔒')
+            new ButtonBuilder().setCustomId('close_ticket').setLabel('Close').setStyle(ButtonStyle.Danger)
         );
 
-        await channel.send({ content: `<@${interaction.user.id}>`, embeds: [ticketEmbed], components: [closeRow] });
-        await interaction.editReply({ content: `Ticket created in ${channel}` });
+        await channel.send({ content: `<@${interaction.user.id}> | <@${OWNER_ID}>`, embeds: [infoEmbed], components: [closeRow] });
+        await interaction.editReply({ content: `Ticket created: ${channel}` });
 
-        // --- Lógica de Inactividad del Dueño (1 hora) ---
+        // Timer de 1 hora de inactividad
         const timeout = setTimeout(async () => {
             const currentTicket = activeTickets.get(channel.id);
             if (currentTicket && !currentTicket.replied) {
-                await channel.send("🕒 **System Notification:** It seems the owner is currently offline, perhaps sleeping or away from home. Please wait patiently, and you will be assisted as soon as possible. Thank you!");
+                await channel.send("🕒 **System:** It seems the owner is currently offline. Please wait patiently.");
             }
-        }, 3600000); // 1 hora en milisegundos
+        }, 3600000);
 
         activeTickets.set(channel.id, { replied: false, timeout: timeout });
     }
 
+    // 3. CERRAR TICKET
     if (interaction.isButton() && interaction.customId === 'close_ticket') {
-        await interaction.reply('Closing ticket and archiving transcript...');
+        await interaction.reply('Generating transcript and closing...');
+        const attachment = await transcript.createTranscript(interaction.channel, { limit: -1, fileName: `fpsware-${interaction.channel.name}.html` });
         
-        const attachment = await transcript.createTranscript(interaction.channel, {
-            limit: -1,
-            fileName: `transcript-${interaction.channel.name}.html`,
-            poweredBy: false
-        });
-
         const logChannel = interaction.guild.channels.cache.get(LOGS_CHANNEL_ID);
-        if (logChannel) {
-            await logChannel.send({
-                content: `**Ticket Closed:** ${interaction.channel.name}\n**User:** <@${interaction.user.id}>`,
-                files: [attachment]
-            });
-        }
+        if (logChannel) await logChannel.send({ content: `Ticket closed: ${interaction.channel.name}`, files: [attachment] });
 
-        // Limpiar datos y borrar canal
         if (activeTickets.has(interaction.channel.id)) {
             clearTimeout(activeTickets.get(interaction.channel.id).timeout);
             activeTickets.delete(interaction.channel.id);
         }
-
         setTimeout(() => interaction.channel.delete(), 5000);
     }
 });
